@@ -1,0 +1,63 @@
+=== USER AND GROUP CHECK ===
+kk-api:x:999:987:KijaniKiosk kk-api Service:/nonexistent:/usr/sbin/nologin
+kk-payments:x:997:986:KijaniKiosk kk-payments Service:/nonexistent:/usr/sbin/nologin
+kk-logs:x:995:985:KijaniKiosk kk-logs Service:/nonexistent:/usr/sbin/nologin
+kijanikiosk:x:988:kk-api,kk-payments,kk-logs
+
+=== DIRECTORY STRUCTURE ===
+total 20
+drwxr-xr-x 5 root        root        4096 Mar 27 17:29 .
+drwxr-xr-x 3 root        root        4096 Mar 27 17:29 ..
+drwxr-x--- 2 kk-api      kk-api      4096 Mar 27 20:09 api
+drwxr-x--- 2 kk-payments kk-payments 4096 Mar 27 20:09 payments
+drwxr-xr-x 3 root        root        4096 Mar 27 17:29 shared
+
+=== ACL PERMISSIONS ===
+# file: opt/kijanikiosk/shared/logs/
+# owner: kk-logs
+# group: kijanikiosk
+user::rwx
+user:kk-payments:rwx
+user:kk-api:rwx
+group::rwx
+mask::rwx
+other::r-x
+default:user::rwx
+default:user:kk-payments:rwx
+default:user:kk-api:rwx
+default:group::rwx
+default:mask::rwx
+default:other::r-x
+
+
+=== FIREWALL STATE ===
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    Anywhere                  
+[ 2] 80/tcp                     ALLOW IN    Anywhere                  
+[ 3] 3001/tcp                   ALLOW IN    Anywhere                  
+[ 4] 22/tcp (v6)                ALLOW IN    Anywhere (v6)             
+[ 5] 80/tcp (v6)                ALLOW IN    Anywhere (v6)             
+[ 6] 3001/tcp (v6)              ALLOW IN    Anywhere (v6)             
+
+
+=== PACKAGE HOLDS ===
+nginx
+nodejs
+
+=== SYSTEMD UNITS ===
+kk-api.service                               enabled         enabled
+kk-payments.service                          enabled         enabled
+
+=== SECURITY SCORE (API) ===
+  NAME                                                        DESCRIPTION                                                             EXPOSURE
+✗ RemoveIPC=                                                  Service user may leave SysV IPC objects around                               0.1
+✗ RootDirectory=/RootImage=                                   Service runs within the host's root directory                                0.1
+✓ User=/DynamicUser=                                          Service runs under a static non-root user identity                      
+✗ CapabilityBoundingSet=~CAP_SYS_TIME                         Service processes may change the system clock                                0.2
+
+=== DISK USAGE ===
+12K	/opt/kijanikiosk/shared/logs/
+Archived and active journals take up 16.0M in the file system.
