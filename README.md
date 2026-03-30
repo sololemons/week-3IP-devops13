@@ -1,4 +1,4 @@
-# KijaniKiosk Infrastructure Hardening (Week 2)
+# KijaniKiosk Infrastructure Hardening (Week 3)
 
 ## Overview
 This repository contains the provisioning automation, security hardening decisions, and verification evidence for the KijaniKiosk Week 2 DevOps security exercise.
@@ -77,5 +77,3 @@ Visual evidence is stored in `screenshots/` and embedded in the reports.
 - Some controls were calibrated to preserve Node.js runtime stability while maintaining strong containment.
 - Report files are intended as audit artifacts for both technical and non-technical review.
 
-## Authoring Context
-This repository is maintained as part of Moringa DevOps Week 2 hardening and verification deliverables.
