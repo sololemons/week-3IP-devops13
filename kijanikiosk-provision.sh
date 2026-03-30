@@ -7,9 +7,9 @@
 # - Directory /opt/kijanikiosk/ and subdirs exist: 
 #   Phase 3 will enforce correct ownership and verify the new /health directory.
 # - Package holds (nginx, nodejs) are already active: 
-#   Phase 4 will verify version alignment before attempting installation.
+#   Phase 1 will verify version alignment before attempting installation.
 # - systemd units (kk-api, kk-payments) exist but lack hardening: 
-#   Phase 6 will overwrite with production-grade specs (Target Score < 2.5).
+#   Phase 4 will overwrite with production-grade specs (Target Score < 2.5).
 # - ACLs on /shared/logs are present but require logrotate compatibility: 
 #   Phase 7/8 will ensure default ACLs propagate to rotated files.
 # ==============================================================================
@@ -25,51 +25,62 @@ readonly APP_GROUP="kijanikiosk"
 readonly APP_BASE="/opt/kijanikiosk"
 
 log() {
-  # Prints a standard message in blue
   echo -e "\e[34m[INFO]\e[0m $1"
 }
 
 success() {
-  # Prints a success message in green
+  
   echo -e "\e[32m[SUCCESS]\e[0m $1"
 }
 
-
 provision_packages() {
-  log "=== Phase 1: Package Management ==="
+  log "=== Phase 1: Package Management (Strict Versioning) ==="
+
+  local current_nginx
+  current_nginx=$(dpkg-query -W -f='${Version}' nginx 2>/dev/null || echo "not_installed")
+
+  if [[ "$current_nginx" != "not_installed" ]]; then
+    if [[ "$current_nginx" == "$NGINX_VERSION" ]]; then
+      log "Validated: Nginx is already at the pinned version ($NGINX_VERSION)."
+    else
+      echo -e "\e[31m[FATAL]\e[0m Nginx version mismatch detected!" >&2
+      echo -e "       Installed: $current_nginx" >&2
+      echo -e "       Required:  $NGINX_VERSION" >&2
+      echo -e "Manual intervention required. Use 'apt-get install nginx=$NGINX_VERSION' manually if you must downgrade." >&2
+      exit 1
+    fi
+  fi
 
   log "Updating package lists..."
   DEBIAN_FRONTEND=noninteractive apt-get update -qq
 
-  log "Installing base dependencies..."
+  log "Installing base dependencies (acl, ufw, gnupg)..."
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     curl gnupg acl ufw
 
-  log "Adding NodeSource GPG key and repository..."
+  log "Configuring NodeSource repository..."
   mkdir -p /etc/apt/keyrings
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg --yes
-  log "Downloading NodeJs Using the key and > Overwrites the file"
   echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR_VERSION}.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-
-  log "Updating package lists for NodeSource..."
+  
   DEBIAN_FRONTEND=noninteractive apt-get update -qq
-
-  log "Installing pinned versions of Nginx and Node.js..."
+  log "Applying version-pinned installations..."
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     nginx="${NGINX_VERSION}" nodejs
 
-  log "Locking (holding) packages to prevent accidental upgrades..."
+  log "Locking package versions (apt-mark hold)..."
   apt-mark hold nginx nodejs > /dev/null
 
   local actual_nginx=$(dpkg-query -W -f='${Version}' nginx)
   local actual_node=$(node -v)
   
-  success "Packages installed and held. Nginx: ${actual_nginx} | Node: ${actual_node}"
+  success "Package state verified. Nginx: ${actual_nginx} | Node: ${actual_node}"
 }
+
 provision_users() {
     log "=== Phase 2: Service Accounts ==="
 
-    # 1. Ensure the Application Group exists
+    
     if getent group "${APP_GROUP}" >/dev/null 2>&1; then
         log "Validated: Group '${APP_GROUP}' already exists."
     else
@@ -77,7 +88,7 @@ provision_users() {
         success "Created: System group '${APP_GROUP}'."
     fi
 
-    # 2. Provision Service Accounts (No Login, No Home)
+   
     local accounts=("kk-api" "kk-payments" "kk-logs")
     for account in "${accounts[@]}"; do
         if ! id "${account}" >/dev/null 2>&1; then
@@ -88,12 +99,11 @@ provision_users() {
             success "Created: Service user '${account}'."
         else
             log "Validated: Service user '${account}' already exists."
-            # Ensure they are in the group even if they existed before
+          
             usermod -aG "${APP_GROUP}" "${account}"
         fi
     done
 
-    # 3. Provision Dev User (Login Enabled, Home Directory)
     if id "lemonsthedev" >/dev/null 2>&1; then
         if id -nG "lemonsthedev" | grep -qw "${APP_GROUP}"; then
             log "Validated: User 'lemonsthedev' is already in ${APP_GROUP}."
@@ -103,7 +113,7 @@ provision_users() {
         fi
     else
         log "User 'lemonsthedev' not found. Creating user..."
-        # -m creates home, -g sets primary group, -s sets shell
+        
         useradd -m -s /bin/bash -g "${APP_GROUP}" lemonsthedev
         if [ $? -eq 0 ]; then
             success "Created: User 'lemonsthedev' with home directory."
@@ -113,38 +123,54 @@ provision_users() {
         fi
     fi
 }
-
-
 provision_dirs() {
   log "=== Phase 3: Directory Architecture ==="
 
-  log "Creating application directory tree..."
-  # mkdir -p is naturally idempotent. It silently succeeds if they already exist.
+  log "Creating application directory..."
   mkdir -p "${APP_BASE}/api"
   mkdir -p "${APP_BASE}/payments"
   mkdir -p "${APP_BASE}/shared/logs"
+  mkdir -p "${APP_BASE}/health"  
+  mkdir -p "${APP_BASE}/config"   
 
   log "Setting ownership and strict base permissions..."
 
+ 
   chown kk-api:${APP_GROUP} "${APP_BASE}/api"
   chmod 750 "${APP_BASE}/api"
-
   chown kk-payments:${APP_GROUP} "${APP_BASE}/payments"
   chmod 750 "${APP_BASE}/payments"
 
   chown kk-logs:${APP_GROUP} "${APP_BASE}/shared/logs"
-  chmod 775 "${APP_BASE}/shared/logs"  
+  chmod 775 "${APP_BASE}/shared/logs"
 
-  log "Applying Access Control Lists (ACLs) to the shared logs directory..."
+  chown root:${APP_GROUP} "${APP_BASE}/health"
+  chmod 750 "${APP_BASE}/health"
+
+  chown root:${APP_GROUP} "${APP_BASE}/config"
+  chmod 755 "${APP_BASE}/config"
+
+  log "Applying Access Control Lists (ACLs)..."
+
   
-  setfacl -m u:kk-api:rwx "${APP_BASE}/shared/logs"
-  setfacl -m u:kk-payments:rwx "${APP_BASE}/shared/logs"
+  setfacl -m u:kk-api:rwx,u:kk-payments:rwx "${APP_BASE}/shared/logs"
+  setfacl -d -m u:kk-api:rwx,u:kk-payments:rwx "${APP_BASE}/shared/logs"
 
-  setfacl -d -m u:kk-api:rwx "${APP_BASE}/shared/logs"
-  setfacl -d -m u:kk-payments:rwx "${APP_BASE}/shared/logs"
+ 
+  setfacl -m g:${APP_GROUP}:rx "${APP_BASE}/health"
+  setfacl -d -m g:${APP_GROUP}:r "${APP_BASE}/health"
 
-  success "Directories created and strict access controls applied."
+
+  if [ ! -f "${APP_BASE}/config/payments-api.env" ]; then
+    log "Deploying payments-api.env..."
+    echo "PORT=3001" > "${APP_BASE}/config/payments-api.env"
+    chown root:kk-payments "${APP_BASE}/config/payments-api.env"
+    chmod 640 "${APP_BASE}/config/payments-api.env"
+  fi
+
+  success "Directories created with their permissions"
 }
+
 provision_services() {
   log "=== Phase 4: Deploying App Code & systemd ==="
 
@@ -164,22 +190,23 @@ provision_services() {
       install -o kk-logs -g kijanikiosk -m 640 "${SRC_DIR}/log-service.js" "${APP_BASE}/shared/logs/log-service.js"
   else
       # Fallback dummy script just so the service doesn't crash if the file is missing in lab as we were not given this in our previous labs 
-      echo "console.log('Log service placeholder running...'); setInterval(() => {}, 60000);" > "${APP_BASE}/shared/logs/log-service.js"
+      echo "console.log('Log service placeholder running...'); setInterval(() => {}, 60000)" > "${APP_BASE}/shared/logs/log-service.js"
       chown kk-logs:kijanikiosk "${APP_BASE}/shared/logs/log-service.js"
       chmod 640 "${APP_BASE}/shared/logs/log-service.js"
   fi
 
-  
-  log "Creating Environment Files..."
-  echo "PORT=3000" > /etc/default/kk-api
-  echo "PORT=3001" > /etc/default/kk-payments
-  echo "LOG_LEVEL=info" > /etc/default/kk-logs
+echo "PORT=3000" > "${APP_BASE}/config/kk-api.env"
+chown root:${APP_GROUP} "${APP_BASE}/config/kk-api.env"
+chmod 640 "${APP_BASE}/config/kk-api.env"
 
-  chown kk-api:${APP_GROUP} /etc/default/kk-api
-  chown kk-payments:${APP_GROUP} /etc/default/kk-payments
-  chown kk-logs:${APP_GROUP} /etc/default/kk-logs
 
-  chmod 600 /etc/default/kk-api /etc/default/kk-payments /etc/default/kk-logs
+echo "PORT=3001" > "${APP_BASE}/config/payments-api.env"
+chown root:${APP_GROUP} "${APP_BASE}/config/payments-api.env"
+chmod 640 "${APP_BASE}/config/payments-api.env"
+
+echo "LOG_LEVEL=info" > "${APP_BASE}/config/kk-logs.env"
+chown root:${APP_GROUP} "${APP_BASE}/config/kk-logs.env"
+chmod 640 "${APP_BASE}/config/kk-logs.env"
 
   log "Writing kk-api.service..."
   cat > /etc/systemd/system/kk-api.service << 'UNIT'
@@ -195,16 +222,42 @@ User=kk-api
 Group=kijanikiosk
 WorkingDirectory=/opt/kijanikiosk/api
 ExecStart=/usr/bin/node /opt/kijanikiosk/api/server.js
-EnvironmentFile=/etc/default/kk-api
+EnvironmentFile=/opt/kijanikiosk/config/kk-api.env
 Restart=on-failure
 RestartSec=5
 
-# Hardening Directives 
+# === 1. Filesystem Sandboxing ===
 ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 PrivateDevices=yes
-NoNewPrivileges=yes
+ReadOnlyPaths=/opt/kijanikiosk/api
+ReadOnlyPaths=/opt/kijanikiosk/config/kk-api.env
 ReadWritePaths=/opt/kijanikiosk/shared/logs
+InaccessiblePaths=/root /boot /home /run/user
+
+# === 2. Privilege Restriction ===
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictRealTIME=yes
+
+# === 3. Kernel & Resource Protection ===
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+# === 4. System Call Filtering  ===
+# Only allow standard service calls and network I/O
+SystemCallFilter=@system-service @network-io @signal @timer
+SystemCallErrorNumber=EPERM
+
+# === 5. Network Sandboxing ===
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
@@ -225,15 +278,17 @@ User=kk-payments
 Group=kijanikiosk
 WorkingDirectory=/opt/kijanikiosk/payments
 ExecStart=/usr/bin/node /opt/kijanikiosk/payments/payment-service.js
-EnvironmentFile=/etc/default/kk-payments
+EnvironmentFile=/opt/kijanikiosk/config/payments-api.env
 Restart=on-failure
 RestartSec=5
 
-# Aggressive Hardening Directives for the Most critical service here
+# Aggressive Hardening
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+
 ReadWritePaths=/opt/kijanikiosk/shared/logs
+ReadOnlyPaths=/opt/kijanikiosk/config/payments-api.env
 
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -275,16 +330,36 @@ User=kk-logs
 Group=kijanikiosk
 WorkingDirectory=/opt/kijanikiosk/shared/logs
 ExecStart=/usr/bin/node /opt/kijanikiosk/shared/logs/log-service.js
-EnvironmentFile=/etc/default/kk-logs
+EnvironmentFile=/opt/kijanikiosk/config/kk-logs.env
 Restart=on-failure
 RestartSec=5
 
-# Hardening Directives 
+# === Filesystem Hardening ===
 ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 PrivateDevices=yes
-NoNewPrivileges=yes
+ReadOnlyPaths=/opt/kijanikiosk/config/kk-logs.env
 ReadWritePaths=/opt/kijanikiosk/shared/logs
+InaccessiblePaths=/root /boot /home
+
+# === Privilege Hardening ===
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+
+# === Kernel & System Hardening ===
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+# === System Call Filtering ===
+SystemCallFilter=@system-service @network-io @signal @timer
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
@@ -333,9 +408,9 @@ CONF
     create 0660 kk-logs kijanikiosk
     sharedscripts
     postrotate
-        systemctl restart kk-logs.service >/dev/null 2>&1 || true
-        systemctl restart kk-payments.service >/dev/null 2>&1 || true
-        systemctl restart kk-api.service >/dev/null 2>&1 || true
+        /usr/bin/systemctl kill -s HUP kk-logs.service >/dev/null 2>&1 || true
+        /usr/bin/systemctl kill -s HUP kk-payments.service >/dev/null 2>&1 || true
+        /usr/bin/systemctl kill -s HUP kk-api.service >/dev/null 2>&1 || true
     endscript
 }
 EOF
